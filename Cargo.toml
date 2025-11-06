@@ -1,0 +1,20 @@
+[package]
+name = "tos-alloc"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Dynamic memory allocator for TOS TAKO VM contracts"
+repository = "https://github.com/tos-network/tos-alloc"
+
+[workspace]
+# This ensures the package is not part of any parent workspace
+
+[dependencies]
+# No dependencies for bump allocator
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+default = ["bump"]
+bump = []
