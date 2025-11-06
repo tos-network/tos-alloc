@@ -26,7 +26,7 @@ pub extern "C" fn entrypoint() -> u64 {
     for i in 0..10 {
         numbers.push(i);
     }
-    // ✅ 正确: log_u64 需要5个u64参数
+    // Log the Vec length (log_u64 requires 5 u64 parameters)
     log_u64(numbers.len() as u64, 0, 0, 0, 0);
 
     // Test 2: BTreeMap operations
