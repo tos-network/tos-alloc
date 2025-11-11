@@ -1,2 +1,5 @@
 target/
 Cargo.lock
+
+# Exception: Track compiled test binaries for CI integration tests
+!examples/basic/target/tbpf-tos-tos/release/ex.so
