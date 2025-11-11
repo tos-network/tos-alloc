@@ -20,6 +20,25 @@ static ALLOCATOR: TosAllocator = TosAllocator::new();
 pub extern "C" fn entrypoint() -> u64 {
     log("=== TOS Alloc Basic Example (Solana-Style) ===");
 
+    // Test 0: Check heap region info BEFORE any allocation
+    log("Test 0: Checking heap region syscall...");
+    let (heap_start, heap_size) = get_heap_region();
+    log("Heap region received:");
+    log_u64(heap_start, heap_size, 0, 0, 0);
+
+    // Validate heap region
+    if heap_start != 0x300000000 {
+        log("ERROR: Unexpected heap_start!");
+        log_u64(heap_start, 0, 0, 0, 0);
+        return 1; // Error code
+    }
+    if heap_size != 32768 {
+        log("ERROR: Unexpected heap_size!");
+        log_u64(heap_size, 0, 0, 0, 0);
+        return 1; // Error code
+    }
+    log("✓ Heap region is correct");
+
     // Test 1: Vec operations
     log("Test 1: Vec operations");
     let mut numbers = Vec::new();

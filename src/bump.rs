@@ -1,65 +1,79 @@
-//! Heap-based bump allocator implementation (Solana-compatible)
+//! Solana-compatible bump allocator for TOS TAKO VM
 //!
-//! Stores allocator state at the beginning of the heap region instead of using
-//! global statics. This avoids the need for writable .data sections in eBPF.
-//!
-//! # Design (Based on Solana's custom_heap)
-//!
-//! ```text
-//! Heap Layout:
-//! ┌────────────────────────────────────┐
-//! │ Position Pointer (8 bytes)         │  ← Current allocation position
-//! ├────────────────────────────────────┤
-//! │ User allocations                   │  ← Vec, Box, etc.
-//! │ ...                                │
-//! └────────────────────────────────────┘
-//! ```
-//!
-//! The position pointer is stored at HEAP_START and tracks the next free address.
-//! On first allocation, it's initialized to HEAP_START + size_of::<usize>().
+//! This implementation matches Solana's allocator exactly to ensure compatibility.
 
 use core::alloc::{GlobalAlloc, Layout};
 use core::mem::size_of;
 use core::ptr::null_mut;
 
-/// Syscall to get heap region information from the VM
+/// Heap start address (matches Solana's MM_HEAP_START)
+pub const HEAP_START_ADDRESS: usize = 0x300000000;
+
+/// Default heap size (32 KB, matches Solana)
+pub const HEAP_LENGTH: usize = 32 * 1024;
+
+/// Solana-compatible bump allocator
 ///
-/// This avoids hardcoded 64-bit constants which are problematic in eBPF bytecode.
-unsafe fn get_heap_region_syscall() -> (usize, usize) {
-    let mut heap_start: u64 = 0;
-    let mut heap_size: u64 = 0;
-
-    // Call the tos_get_heap_region syscall
-    extern "C" {
-        fn tos_get_heap_region(heap_start_ptr: *mut u64, heap_size_ptr: *mut u64) -> u64;
-    }
-
-    tos_get_heap_region(&mut heap_start as *mut u64, &mut heap_size as *mut u64);
-
-    (heap_start as usize, heap_size as usize)
-}
-
-/// Heap-based bump allocator for TAKO VM
+/// **Key design decisions (matching Solana exactly)**:
+/// 1. **Hardcoded heap address** (0x300000000) - No syscalls needed
+/// 2. **Allocates from high to low** - Position starts at heap_top, moves down
+/// 3. **Position pointer at heap start** - First 8 bytes store current position
 ///
-/// **Solana-Compatible Design**: Stores state on heap instead of in globals.
+/// # Heap Layout
+///
+/// ```text
+/// 0x300000000: Position Pointer (8 bytes) ← Stores current allocation position
+/// 0x300000008: User allocations start here
+/// ...          Allocations grow upward
+/// 0x300008000: Heap top (initial position value)
+/// ```
 ///
 /// # Usage
 ///
 /// ```rust,no_run
-/// use tos_alloc::BumpAllocator;
+/// use tos_alloc::TosAllocator;
 ///
 /// #[global_allocator]
-/// static ALLOCATOR: BumpAllocator = BumpAllocator::new();
+/// static ALLOCATOR: TosAllocator = TosAllocator::new();
 ///
-/// // No manual init needed! Allocator initializes on first use.
-/// let v = vec![1, 2, 3];
+/// let v = vec![1, 2, 3];  // Works immediately
 /// ```
-///
-/// # Performance
-///
-/// - First allocation: ~10-15 CU (initialization)
-/// - Subsequent allocations: ~5-10 CU
-pub struct BumpAllocator;
+pub struct BumpAllocator {
+    pub start: usize,
+    pub len: usize,
+}
+
+impl BumpAllocator {
+    /// Create a new allocator with default heap configuration
+    pub const fn new() -> Self {
+        Self {
+            start: HEAP_START_ADDRESS,
+            len: HEAP_LENGTH,
+        }
+    }
+
+    /// Get heap usage statistics
+    ///
+    /// Returns (used_bytes, remaining_bytes)
+    pub fn usage() -> (usize, usize) {
+        unsafe {
+            let allocator = Self::new();
+            let pos_ptr = allocator.start as *mut usize;
+            let pos = *pos_ptr;
+
+            if pos == 0 {
+                // Not initialized yet
+                (0, allocator.len - size_of::<usize>())
+            } else {
+                // Position moves from top to bottom
+                let heap_top = allocator.start + allocator.len;
+                let used = heap_top - pos;
+                let remaining = pos - (allocator.start + size_of::<usize>());
+                (used, remaining)
+            }
+        }
+    }
+}
 
 impl Default for BumpAllocator {
     fn default() -> Self {
@@ -67,103 +81,44 @@ impl Default for BumpAllocator {
     }
 }
 
-impl BumpAllocator {
-    /// Create a new allocator instance
-    ///
-    /// This is a zero-sized type, so creating instances has no cost.
-    pub const fn new() -> Self {
-        Self
-    }
-
-    /// Get heap usage statistics (for debugging)
-    ///
-    /// Returns (used_bytes, remaining_bytes)
-    pub fn usage() -> (usize, usize) {
-        unsafe {
-            let (heap_start, heap_size) = get_heap_region_syscall();
-
-            // SECURITY: Validate syscall succeeded
-            if heap_start == 0 || heap_size == 0 {
-                return (0, 0); // Syscall failed, return safe values
-            }
-
-            let pos_ptr = heap_start as *mut usize;
-            let heap_end = heap_start.saturating_add(heap_size);
-            let heap_bottom = heap_start.saturating_add(size_of::<usize>());
-
-            let pos = *pos_ptr;
-            if pos == 0 {
-                // Not initialized yet
-                (0, heap_size - size_of::<usize>())
-            } else {
-                // SECURITY: Validate pos is within valid heap range
-                if pos < heap_bottom || pos > heap_end {
-                    // Position pointer was corrupted, return safe values
-                    return (0, heap_size - size_of::<usize>());
-                }
-
-                let used = pos - heap_bottom;
-                let remaining = heap_end - pos;
-                (used, remaining)
-            }
-        }
-    }
-}
-
 unsafe impl GlobalAlloc for BumpAllocator {
+    #[inline]
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        // Based on Solana's custom_heap implementation
-        // See: agave/programs/sbf/rust/custom_heap/src/lib.rs
+        // Solana's bump allocator implementation
+        // Source: agave/sdk/program/src/entrypoint.rs
 
-        // Get heap region from syscall to avoid hardcoded constant issues
-        let (heap_start, heap_size) = get_heap_region_syscall();
-
-        // SECURITY: Validate syscall returned valid heap info
-        if heap_start == 0 || heap_size == 0 {
-            return null_mut(); // Syscall failed
-        }
-
-        let pos_ptr = heap_start as *mut usize;
-        let heap_end = heap_start.saturating_add(heap_size);
-        let heap_bottom = heap_start.saturating_add(size_of::<usize>());
-
+        let pos_ptr = self.start as *mut usize;
         let mut pos = *pos_ptr;
+
         if pos == 0 {
-            // First allocation - initialize position
-            pos = heap_bottom;
+            // First allocation: start from heap top
+            pos = self.start + self.len;
         }
 
-        // SECURITY: Validate pos is within valid heap range to prevent pointer forgery
-        // A contract could write an arbitrary address to the position pointer to
-        // access memory outside the heap region. We must validate and clamp it.
-        if pos < heap_bottom || pos > heap_end {
-            // Position pointer was corrupted/forged, reset to safe value
-            pos = heap_bottom;
-            *pos_ptr = pos;
-        }
+        // Allocate from high to low (move position downward)
+        pos = pos.saturating_sub(layout.size());
 
         // Align the position
-        let align = layout.align();
-        pos = pos.saturating_add(align - 1) & !(align - 1);
+        pos &= !(layout.align().wrapping_sub(1));
 
-        // Calculate new position
-        let new_pos = pos.saturating_add(layout.size());
-
-        // SECURITY: Check if we have enough space AND new_pos is valid
-        // Also check for overflow where new_pos wraps around
-        if new_pos > heap_end || new_pos < pos {
-            // Out of memory or overflow
-            return null_mut();
+        // Check bounds
+        if pos < self.start + size_of::<*mut u8>() {
+            return null_mut();  // Out of memory
         }
 
         // Update position pointer
-        *pos_ptr = new_pos;
+        *pos_ptr = pos;
 
         pos as *mut u8
     }
 
-    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {
-        // Bump allocator never deallocates individual allocations
-        // Memory is reclaimed when contract execution ends
+    #[inline]
+    unsafe fn dealloc(&self, _: *mut u8, _: Layout) {
+        // Bump allocator never deallocates
+        // Contract memory is reclaimed when execution finishes
     }
 }
+
+/// Type alias for compatibility with existing code
+#[allow(dead_code)]
+pub type TosAllocator = BumpAllocator;
