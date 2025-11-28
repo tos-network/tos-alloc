@@ -3,11 +3,13 @@ name = "ex"
 version = "0.1.0"
 edition = "2021"
 
+[workspace]
+
 [lib]
 crate-type = ["cdylib"]
 
 [dependencies]
-tako-sdk = { path = "../../../../tako/sdk" }
+tako-sdk = { git = "https://github.com/tos-network/tako", rev = "fb639c0" }
 
 [profile.release]
 opt-level = 3
